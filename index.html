@@ -1,0 +1,33 @@
+<!doctype html>
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+
+<body style="margin:0; background:#111; touch-action:none; overflow:hidden; height:100vh">
+    <button id="fs" style="position:fixed;top:8px;right:8px;z-index:9">Fullscreen</button>
+    <script>
+        const ws = new WebSocket(`ws://${location.host}/ws`);
+        let drawing = false;
+
+        const sendSize = () => ws.readyState === 1 &&
+            ws.send(JSON.stringify({ type: 'size', w: innerWidth, h: innerHeight }));
+        ws.onopen = sendSize;
+        addEventListener('resize', sendSize);
+
+        const send = (type, e) => {
+            if (ws.readyState !== 1) return;
+            const p = e.pointerType === 'pen' ? e.pressure : (type === 'hover' ? 0 : 0.5);
+            ws.send(JSON.stringify({
+                type, x: e.clientX / innerWidth, y: e.clientY / innerHeight, p,
+                pen: e.pointerType === 'pen'
+            }));
+        };
+
+        addEventListener('pointerdown', e => { drawing = true; send('down', e); });
+        addEventListener('pointermove', e => {
+            for (const c of (e.getCoalescedEvents?.() || [e])) send(drawing ? 'move' : 'hover', c);
+        });
+        addEventListener('pointerup', e => { drawing = false; send('up', e); });
+        addEventListener('pointercancel', e => { drawing = false; send('up', e); });
+        document.documentElement.addEventListener('pointerleave', e => send('leave', e));
+        addEventListener('contextmenu', e => e.preventDefault());
+        fs.onclick = () => document.documentElement.requestFullscreen();
+    </script>
