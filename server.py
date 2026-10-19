@@ -1,287 +1,173 @@
-import ctypes, json, socket
+"""Phone Tablet Windows server with Tk control panel."""
+import asyncio, ctypes, json, queue, socket, sys, threading
 from ctypes import wintypes as w
+from pathlib import Path
+import tkinter as tk
+from tkinter import messagebox, ttk
 from aiohttp import web, WSMsgType
-import os
 
-user32 = ctypes.windll.user32
-user32.SetProcessDPIAware()
-SW, SH = user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+BASE = Path(__file__).resolve().parent
+RESOURCE = Path(getattr(sys, "_MEIPASS", BASE))
+PATH = (Path(sys.executable).parent if getattr(sys, "frozen", False) else BASE) / "tablet_config.json"
+DEFAULT = {"x": 0., "y": 0., "w": 1., "h": 1., "lock": True,
+           "aspect": None, "port": 8000}
 
-import threading, tkinter as tk
-
-pos = [0, 0]  # latest pen position in pixels
-
-CFG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tablet_config.json")
-cfg = {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "lock": True, "aspect": None}
-try:
-    with open(CFG_PATH) as f:
-        cfg.update(json.load(f))
-except Exception:
-    pass
-
-def save_cfg():
-    try:
-        with open(CFG_PATH, "w") as f:
-            json.dump(cfg, f, indent=2)
-    except Exception as e:
-        print("Could not save config:", e)
-
-def open_config(root):
-    PAD, CW = 20, 560
-    CH = int(CW * SH / SW)
-    win = tk.Toplevel(root)
-    win.title("Phone area")
-    win.attributes("-topmost", True)
-    win.protocol("WM_DELETE_WINDOW", win.iconify)   # closing just minimizes
-    cv = tk.Canvas(win, width=CW + 2*PAD, height=CH + 2*PAD, bg="#1e1e1e", highlightthickness=0)
-    cv.pack()
-    lock = tk.BooleanVar(value=cfg["lock"])
-    state = {"mode": None, "start": None, "mouse": None, "aspect": cfg["aspect"]}
-
-    def ratio():  # rect height / width in normalized units for the phone's shape
-        return SW / ((cfg["aspect"] or 2.0) * SH)
-
-    def to_canvas():
-        return (PAD + cfg["x"]*CW, PAD + cfg["y"]*CH,
-                PAD + (cfg["x"]+cfg["w"])*CW, PAD + (cfg["y"]+cfg["h"])*CH)
-
-    def redraw():
-        cv.delete("all")
-        cv.create_rectangle(PAD, PAD, PAD+CW, PAD+CH, fill="#3a3a3a", outline="#888")
-        cv.create_text(PAD+8, PAD+8, anchor="nw", fill="#999", text="Laptop screen")
-        x0, y0, x1, y1 = to_canvas()
-        cv.create_rectangle(x0, y0, x1, y1, fill="#2f7fd8", outline="white", width=2)
-        cv.create_text((x0+x1)/2, (y0+y1)/2, fill="white", text="Phone")
-        for cx, cy in ((x0, y0), (x1, y0), (x0, y1), (x1, y1)):
-            cv.create_rectangle(cx-5, cy-5, cx+5, cy+5, fill="white", outline="#2f7fd8")
-
-    def apply_aspect():
-        r = ratio()
-        w = min(cfg["w"], 1.0, 1.0 / r)
-        h = w * r
-        cfg["w"], cfg["h"] = w, h
-        cfg["x"], cfg["y"] = min(cfg["x"], 1 - w), min(cfg["y"], 1 - h)
-
-    def press(e):
-        x0, y0, x1, y1 = to_canvas()
-        corners = {(0, 0): (x0, y0), (1, 0): (x1, y0), (0, 1): (x0, y1), (1, 1): (x1, y1)}
-        state["mode"] = None
-        for (cx, cy), (px_, py_) in corners.items():
-            if abs(e.x - px_) <= 9 and abs(e.y - py_) <= 9:
-                state["mode"] = ("corner", cx, cy)
-                break
-        else:
-            if x0 <= e.x <= x1 and y0 <= e.y <= y1:
-                state["mode"] = ("move",)
-        state["start"] = (cfg["x"], cfg["y"], cfg["w"], cfg["h"])
-        state["mouse"] = ((e.x - PAD) / CW, (e.y - PAD) / CH)
-
-    def drag(e):
-        m = state["mode"]
-        if not m:
-            return
-        mx, my = (e.x - PAD) / CW, (e.y - PAD) / CH
-        sx, sy, sw, sh = state["start"]
-        if m[0] == "move":
-            cfg["x"] = min(max(sx + mx - state["mouse"][0], 0), 1 - sw)
-            cfg["y"] = min(max(sy + my - state["mouse"][1], 0), 1 - sh)
-        else:
-            _, cx, cy = m
-            ax, ay = sx + (1-cx)*sw, sy + (1-cy)*sh      # opposite corner stays fixed
-            w = max(0.03, (mx - ax) if cx else (ax - mx))
-            h = max(0.03, (my - ay) if cy else (ay - my))
-            maxw = (1 - ax) if cx else ax
-            maxh = (1 - ay) if cy else ay
-            if lock.get():
-                r = ratio()
-                w = min(max(w, h / r), maxw, maxh / r)
-                h = w * r
-            else:
-                w, h = min(w, maxw), min(h, maxh)
-            cfg["x"] = ax if cx else ax - w
-            cfg["y"] = ay if cy else ay - h
-            cfg["w"], cfg["h"] = w, h
-        redraw()
-
-    cv.bind("<Button-1>", press)
-    cv.bind("<B1-Motion>", drag)
-    cv.bind("<ButtonRelease-1>", lambda e: save_cfg())
-
-    def on_lock():
-        cfg["lock"] = lock.get()
-        if lock.get():
-            apply_aspect()
-        redraw(); save_cfg()
-
-    def fit():
-        r = ratio()
-        w = min(1.0, 1.0 / r)
-        cfg.update(w=w, h=w*r, x=(1-w)/2, y=(1-w*r)/2)
-        redraw(); save_cfg()
-
-    def full():
-        cfg.update(x=0.0, y=0.0, w=1.0, h=1.0, lock=False)
-        lock.set(False)
-        redraw(); save_cfg()
-
-    bar = tk.Frame(win); bar.pack(fill="x", pady=4)
-    tk.Checkbutton(bar, text="Lock phone aspect ratio", variable=lock, command=on_lock).pack(side="left", padx=6)
-    tk.Button(bar, text="Full screen (stretch)", command=full).pack(side="right", padx=6)
-    tk.Button(bar, text="Fit", command=fit).pack(side="right")
-    info = tk.Label(win, anchor="w")
-    info.pack(fill="x", padx=6, pady=(0, 6))
-
-    def update_info():
-        a = cfg["aspect"]
-        info.config(text=f"Phone aspect ratio: {a:.2f}" if a else "Open the page on your phone to detect its aspect ratio")
-
-    def poll():
-        if cfg["aspect"] != state["aspect"]:
-            state["aspect"] = cfg["aspect"]
-            if lock.get():
-                apply_aspect()
-            redraw(); save_cfg()
-        update_info()
-        win.after(300, poll)
-
-    if lock.get():
-        apply_aspect()
-    redraw(); poll()
-
-def cursor_overlay():
-    R = 10
-    root = tk.Tk()
-    root.overrideredirect(True)
-    root.attributes("-topmost", True)
-    root.attributes("-transparentcolor", "black")
-    root.geometry(f"{2*R}x{2*R}+0+0")
-    c = tk.Canvas(root, width=2*R, height=2*R, bg="black", highlightthickness=0)
-    c.pack()
-    c.create_oval(2, 2, 2*R-2, 2*R-2, outline="white", width=2)
-    c.create_oval(R-2, R-2, R+2, R+2, fill="red", outline="")
-    root.update_idletasks()
-    # click-through, no focus stealing, hidden from Alt-Tab
-    hwnd = user32.GetParent(root.winfo_id())
-    style = user32.GetWindowLongW(hwnd, -20)
-    user32.SetWindowLongW(hwnd, -20, style | 0x80000 | 0x20 | 0x80 | 0x08000000)
-
-    def tick():
-        root.geometry(f"+{pos[0]-R}+{pos[1]-R}")
-        root.after(8, tick)
-    tick()
-    open_config(root)
-    root.mainloop()
-    root.mainloop()
+class Settings:
+    def __init__(self):
+        self.lock = threading.RLock(); self.data = DEFAULT.copy()
+        try: self.data.update(json.loads(PATH.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError): pass
+    def get(self, key):
+        with self.lock: return self.data[key]
+    def copy(self):
+        with self.lock: return self.data.copy()
+    def update(self, **values):
+        with self.lock:
+            self.data.update(values)
+            try: PATH.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
+            except OSError: pass
 
 class POINTER_INFO(ctypes.Structure):
-    _fields_ = [("pointerType", w.DWORD), ("pointerId", ctypes.c_uint32),
-                ("frameId", ctypes.c_uint32), ("pointerFlags", w.DWORD),
-                ("sourceDevice", w.HANDLE), ("hwndTarget", w.HWND),
-                ("ptPixelLocation", w.POINT), ("ptHimetricLocation", w.POINT),
-                ("ptPixelLocationRaw", w.POINT), ("ptHimetricLocationRaw", w.POINT),
-                ("dwTime", w.DWORD), ("historyCount", ctypes.c_uint32),
-                ("InputData", ctypes.c_int32), ("dwKeyStates", w.DWORD),
-                ("PerformanceCount", ctypes.c_uint64), ("ButtonChangeType", w.DWORD)]
-
+    _fields_=[("pointerType",w.DWORD),("pointerId",ctypes.c_uint32),("frameId",ctypes.c_uint32),("pointerFlags",w.DWORD),("sourceDevice",w.HANDLE),("hwndTarget",w.HWND),("ptPixelLocation",w.POINT),("ptHimetricLocation",w.POINT),("ptPixelLocationRaw",w.POINT),("ptHimetricLocationRaw",w.POINT),("dwTime",w.DWORD),("historyCount",ctypes.c_uint32),("InputData",ctypes.c_int32),("dwKeyStates",w.DWORD),("PerformanceCount",ctypes.c_uint64),("ButtonChangeType",w.DWORD)]
 class POINTER_PEN_INFO(ctypes.Structure):
-    _fields_ = [("pointerInfo", POINTER_INFO), ("penFlags", ctypes.c_uint32),
-                ("penMask", ctypes.c_uint32), ("pressure", ctypes.c_uint32),
-                ("rotation", ctypes.c_uint32), ("tiltX", ctypes.c_int32),
-                ("tiltY", ctypes.c_int32)]
+    _fields_=[("pointerInfo",POINTER_INFO),("penFlags",ctypes.c_uint32),("penMask",ctypes.c_uint32),("pressure",ctypes.c_uint32),("rotation",ctypes.c_uint32),("tiltX",ctypes.c_int32),("tiltY",ctypes.c_int32)]
+class POINTER_TOUCH_INFO(ctypes.Structure):
+    _fields_=[("pointerInfo",POINTER_INFO),("touchFlags",ctypes.c_uint32),("touchMask",ctypes.c_uint32),("rcContact",w.RECT),("rcContactRaw",w.RECT),("orientation",ctypes.c_uint32),("pressure",ctypes.c_uint32)]
+class UNION(ctypes.Union): _fields_=[("pen",POINTER_PEN_INFO),("touch",POINTER_TOUCH_INFO)]
+class POINTER_TYPE_INFO(ctypes.Structure): _fields_=[("type",w.DWORD),("data",UNION)]
 
-class POINTER_TOUCH_INFO(ctypes.Structure):  # only here so the union is the right size
-    _fields_ = [("pointerInfo", POINTER_INFO), ("touchFlags", ctypes.c_uint32),
-                ("touchMask", ctypes.c_uint32), ("rcContact", w.RECT),
-                ("rcContactRaw", w.RECT), ("orientation", ctypes.c_uint32),
-                ("pressure", ctypes.c_uint32)]
+class Injector:
+    PT=3; NEW=1; INRANGE=2; CONTACT=4; BTN1=16; DOWN=0x10000; UPDATE=0x20000; UP=0x40000
+    def __init__(self, settings):
+        self.settings = settings; self.u = ctypes.windll.user32
+        self.u.SetProcessDPIAware(); self.sw=self.u.GetSystemMetrics(0); self.sh=self.u.GetSystemMetrics(1)
+        self.u.CreateSyntheticPointerDevice.restype=ctypes.c_void_p
+        self.u.CreateSyntheticPointerDevice.argtypes=[w.DWORD,ctypes.c_ulong,w.DWORD]
+        self.u.InjectSyntheticPointerInput.argtypes=[ctypes.c_void_p,ctypes.c_void_p,w.DWORD]
+        self.device=self.u.CreateSyntheticPointerDevice(self.PT,1,1)
+        if not self.device: raise RuntimeError("Could not create pen device. Windows 10 1809+ required.")
+    def inject(self, flags, x, y, pressure=0):
+        c=self.settings.copy(); px=int((c["x"]+min(max(x,0),1)*c["w"])*self.sw); py=int((c["y"]+min(max(y,0),1)*c["h"])*self.sh)
+        i=POINTER_TYPE_INFO(); i.type=self.PT; p=i.data.pen; p.pointerInfo.pointerType=self.PT; p.pointerInfo.pointerId=0; p.pointerInfo.pointerFlags=flags; p.pointerInfo.ptPixelLocation.x=px; p.pointerInfo.ptPixelLocation.y=py; p.penMask=1; p.pressure=int(max(0,min(1,pressure))*1024)
+        self.u.InjectSyntheticPointerInput(self.device,ctypes.byref(i),1)
 
-class _U(ctypes.Union):
-    _fields_ = [("penInfo", POINTER_PEN_INFO), ("touchInfo", POINTER_TOUCH_INFO)]
+class Server:
+    def __init__(self, settings, event): self.settings,self.event=settings,event; self.thread=self.loop=self.runner=self.pen=None; self.ready=threading.Event(); self.error=None
+    @property
+    def running(self): return bool(self.thread and self.thread.is_alive() and not self.error)
+    def start(self):
+        self.error=None; self.ready.clear(); self.thread=threading.Thread(target=self.run,daemon=True); self.thread.start(); self.ready.wait(4); return self.running
+    def stop(self):
+        if self.loop and self.thread and self.thread.is_alive(): self.loop.call_soon_threadsafe(self.loop.stop); self.thread.join(3)
+        self.thread=self.loop=self.runner=self.pen=None
+    def run(self):
+        self.loop=asyncio.new_event_loop(); asyncio.set_event_loop(self.loop)
+        try:
+            self.pen=Injector(self.settings); app=web.Application(client_max_size=16384); app.router.add_get("/",self.index); app.router.add_get("/ws",self.ws)
+            self.runner=web.AppRunner(app,access_log=None); self.loop.run_until_complete(self.runner.setup()); self.loop.run_until_complete(web.TCPSite(self.runner,"0.0.0.0",int(self.settings.get("port"))).start()); self.ready.set(); self.loop.run_forever()
+        except Exception as exc: self.error=str(exc); self.event("error",self.error); self.ready.set()
+        finally:
+            if self.runner: self.loop.run_until_complete(self.runner.cleanup())
+            self.loop.close(); self.event("stopped","")
+    async def index(self, request): return web.FileResponse(RESOURCE / "index.html")
+    async def ws(self, request):
+        ws=web.WebSocketResponse(heartbeat=20); await ws.prepare(request); self.event("client","Phone connected"); last=(0,0); down=inrange=False
+        try:
+            async for msg in ws:
+                if msg.type != WSMsgType.TEXT: continue
+                try:
+                    d=json.loads(msg.data); kind=d["type"]
+                    if kind=="size":
+                        aw,ah=float(d["w"]),float(d["h"])
+                        if aw>0 and ah>0: self.settings.update(aspect=aw/ah); self.event("aspect","")
+                        continue
+                    x,y,p=float(d["x"]),float(d["y"]),float(d.get("p",0))
+                except (KeyError,TypeError,ValueError,json.JSONDecodeError): continue
+                last=(x,y); pen=self.pen
+                if kind=="hover": pen.inject(pen.INRANGE|pen.UPDATE|(0 if inrange else pen.NEW),x,y); inrange=True
+                elif kind=="down": pen.inject(pen.INRANGE|pen.CONTACT|pen.BTN1|pen.DOWN|(0 if inrange else pen.NEW),x,y,p); down=inrange=True
+                elif kind=="move" and down: pen.inject(pen.INRANGE|pen.CONTACT|pen.BTN1|pen.UPDATE,x,y,p)
+                elif kind=="up" and down:
+                    pen.inject(pen.INRANGE|pen.UP,x,y); down=False
+                    if not d.get("pen",False): pen.inject(pen.UPDATE,x,y); inrange=False
+                elif kind=="leave" and inrange and not down: pen.inject(pen.UPDATE,x,y); inrange=False
+        finally:
+            if self.pen:
+                if down: self.pen.inject(self.pen.INRANGE|self.pen.UP,*last)
+                if inrange: self.pen.inject(self.pen.UPDATE,*last)
+            self.event("client","Phone disconnected")
+        return ws
 
-class POINTER_TYPE_INFO(ctypes.Structure):
-    _fields_ = [("type", w.DWORD), ("u", _U)]
-
-user32.CreateSyntheticPointerDevice.restype = ctypes.c_void_p
-user32.CreateSyntheticPointerDevice.argtypes = [w.DWORD, ctypes.c_ulong, w.DWORD]
-user32.InjectSyntheticPointerInput.argtypes = [ctypes.c_void_p, ctypes.c_void_p, w.DWORD]
-
-
-
-PT_PEN = 3
-dev = user32.CreateSyntheticPointerDevice(PT_PEN, 1, 1)
-assert dev, "Could not create pen device (needs Windows 10 1809+)"
-
-NEW, INRANGE, INCONTACT, BTN1 = 0x1, 0x2, 0x4, 0x10
-DOWN, UPDATE, UP = 0x10000, 0x20000, 0x40000
-
-def inject(flags, x, y, pressure):
-    px = int((cfg["x"] + min(max(x, 0), 1) * cfg["w"]) * SW)
-    py = int((cfg["y"] + min(max(y, 0), 1) * cfg["h"]) * SH)
-    pos[0], pos[1] = px, py            # <-- feeds the overlay
-    info = POINTER_TYPE_INFO()
-    info.type = PT_PEN
-    pi = info.u.penInfo
-    pi.pointerInfo.pointerType = PT_PEN
-    pi.pointerInfo.pointerId = 0
-    pi.pointerInfo.pointerFlags = flags
-    pi.pointerInfo.ptPixelLocation.x = px  # <-- use the same values
-    pi.pointerInfo.ptPixelLocation.y = py
-    pi.penMask = 0x1
-    pi.pressure = int(max(0, min(1, pressure)) * 1024)
-    user32.InjectSyntheticPointerInput(dev, ctypes.byref(info), 1)
-async def index(req):
-    return web.FileResponse("index.html")
-
-async def ws_handler(req):
-    ws = web.WebSocketResponse()
-    await ws.prepare(req)
-    last = (0, 0)
-    down = False
-    inrange = False
-    async for msg in ws:
-        if msg.type != WSMsgType.TEXT:
-            continue
-        d = json.loads(msg.data)
-        if d["type"] == "size":
-            cfg["aspect"] = d["w"] / d["h"]
-            continue
-        x, y, p, t = d["x"], d["y"], d["p"], d["type"]
-        last = (x, y)
-
-        if t == "hover":
-            inject(INRANGE | UPDATE | (0 if inrange else NEW), x, y, 0)
-            inrange = True
-        elif t == "down":
-            flags = INRANGE | INCONTACT | BTN1 | DOWN | (0 if inrange else NEW)
-            inject(flags, x, y, p)
-            down = inrange = True
-        elif t == "move" and down:
-            inject(INRANGE | INCONTACT | BTN1 | UPDATE, x, y, p)
-        elif t == "up" and down:
-            inject(INRANGE | UP, x, y, 0)
-            down = False
-            if not d.get("pen"):               # finger: lift means gone
-                inject(UPDATE, x, y, 0); inrange = False
-        elif t == "leave" and inrange and not down:
-            inject(UPDATE, x, y, 0)            # no INRANGE flag = pen left
-            inrange = False
-
-    if down:                                    # phone disconnected mid-stroke
-        inject(INRANGE | UP, *last, 0)
-    if inrange:
-        inject(UPDATE, *last, 0)
-    return ws
+class MapEditor:
+    PAD=20; CW=560
+    def __init__(self, app):
+        self.app=app; self.s=app.settings; self.win=tk.Toplevel(app.root); self.win.title("Phone drawing area"); self.win.transient(app.root); self.ch=int(self.CW*app.sh/app.sw); self.canvas=tk.Canvas(self.win,width=self.CW+40,height=self.ch+40,bg="#1d2128",highlightthickness=0); self.canvas.pack(); self.lock=tk.BooleanVar(value=self.s.get("lock")); self.state={}
+        bar=ttk.Frame(self.win,padding=8); bar.pack(fill="x"); ttk.Checkbutton(bar,text="Lock phone aspect ratio",variable=self.lock,command=self.toggle).pack(side="left"); ttk.Button(bar,text="Fit",command=self.fit).pack(side="right"); ttk.Button(bar,text="Full screen",command=self.full).pack(side="right",padx=6); self.info=ttk.Label(self.win,padding=(10,0,10,10)); self.info.pack(fill="x")
+        self.canvas.bind("<Button-1>",self.press); self.canvas.bind("<B1-Motion>",self.drag); self.canvas.bind("<ButtonRelease-1>",lambda e:self.s.update()); self.draw(); self.refresh()
+    def ratio(self): return self.app.sw/((self.s.get("aspect") or 2)*self.app.sh)
+    def rect(self,c=None):
+        c=c or self.s.copy(); return self.PAD+c["x"]*self.CW,self.PAD+c["y"]*self.ch,self.PAD+(c["x"]+c["w"])*self.CW,self.PAD+(c["y"]+c["h"])*self.ch
+    def draw(self):
+        self.canvas.delete("all"); p=self.PAD; self.canvas.create_rectangle(p,p,p+self.CW,p+self.ch,fill="#343b45",outline="#718096"); self.canvas.create_text(p+8,p+8,anchor="nw",fill="#b8c2cc",text="Desktop display"); x0,y0,x1,y1=self.rect(); self.canvas.create_rectangle(x0,y0,x1,y1,fill="#2677c9",outline="white",width=2); self.canvas.create_text((x0+x1)/2,(y0+y1)/2,fill="white",text="Phone drawing area")
+        for x,y in ((x0,y0),(x1,y0),(x0,y1),(x1,y1)): self.canvas.create_rectangle(x-5,y-5,x+5,y+5,fill="white",outline="#2677c9")
+    def press(self,e):
+        x0,y0,x1,y1=self.rect(); self.state["mode"]=None
+        for corner,(x,y) in { (0,0):(x0,y0),(1,0):(x1,y0),(0,1):(x0,y1),(1,1):(x1,y1)}.items():
+            if abs(e.x-x)<=9 and abs(e.y-y)<=9: self.state["mode"]=("corner",*corner); break
+        if not self.state["mode"] and x0<=e.x<=x1 and y0<=e.y<=y1: self.state["mode"]=("move",)
+        self.state["start"]=self.s.copy(); self.state["mouse"]=((e.x-self.PAD)/self.CW,(e.y-self.PAD)/self.ch)
+    def drag(self,e):
+        m=self.state.get("mode")
+        if not m:return
+        mx,my=(e.x-self.PAD)/self.CW,(e.y-self.PAD)/self.ch; c=self.state["start"]; x,y,ww,hh=c["x"],c["y"],c["w"],c["h"]
+        if m[0]=="move": v={"x":min(max(x+mx-self.state["mouse"][0],0),1-ww),"y":min(max(y+my-self.state["mouse"][1],0),1-hh)}
+        else:
+            _,cx,cy=m; ax,ay=x+(1-cx)*ww,y+(1-cy)*hh; ww=max(.03,(mx-ax) if cx else (ax-mx)); hh=max(.03,(my-ay) if cy else (ay-my)); maxw,maxh=((1-ax) if cx else ax),((1-ay) if cy else ay)
+            if self.lock.get(): r=self.ratio(); ww=min(max(ww,hh/r),maxw,maxh/r); hh=ww*r
+            else: ww,hh=min(ww,maxw),min(hh,maxh)
+            v={"x":ax if cx else ax-ww,"y":ay if cy else ay-hh,"w":ww,"h":hh}
+        self.s.update(**v); self.draw()
+    def fit(self):
+        r=self.ratio(); ww=min(1,1/r); self.s.update(w=ww,h=ww*r,x=(1-ww)/2,y=(1-ww*r)/2); self.draw()
+    def full(self): self.lock.set(False); self.s.update(x=0,y=0,w=1,h=1,lock=False); self.draw()
+    def toggle(self):
+        self.s.update(lock=self.lock.get())
+        if self.lock.get():
+            c=self.s.copy(); r=self.ratio(); ww=min(c["w"],1,1/r); self.s.update(w=ww,h=ww*r,x=min(c["x"],1-ww),y=min(c["y"],1-ww*r))
+        self.draw()
+    def refresh(self):
+        if not self.win.winfo_exists():return
+        a=self.s.get("aspect"); self.info.config(text=f"Phone aspect ratio: {a:.2f}" if a else "Open phone page to detect aspect ratio"); self.win.after(400,self.refresh)
 
 def local_ip():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.connect(("8.8.8.8", 80))
-    return s.getsockname()[0]
+    s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+    try: s.connect(("8.8.8.8",80)); return s.getsockname()[0]
+    except OSError: return "127.0.0.1"
+    finally: s.close()
 
-app = web.Application()
-app.add_routes([web.get("/", index), web.get("/ws", ws_handler)])
-print(f"Open on your phone: http://{local_ip()}:8000")
+class App:
+    def __init__(self):
+        self.settings=Settings(); self.events=queue.Queue(); self.root=tk.Tk(); self.root.title("Phone Tablet"); self.root.minsize(580,400); self.root.protocol("WM_DELETE_WINDOW",self.close); u=ctypes.windll.user32; u.SetProcessDPIAware(); self.sw,self.sh=u.GetSystemMetrics(0),u.GetSystemMetrics(1); self.server=Server(self.settings,self.event); self.build(); self.root.after(100,self.drain)
+    def build(self):
+        st=ttk.Style(self.root); st.configure("Title.TLabel",font=("Segoe UI",18,"bold")); st.configure("Muted.TLabel",foreground="#5d6773"); box=ttk.Frame(self.root,padding=24); box.pack(fill="both",expand=True); ttk.Label(box,text="Phone Tablet",style="Title.TLabel").pack(anchor="w"); ttk.Label(box,text="Use phone and S Pen as precise Windows pen input.",style="Muted.TLabel").pack(anchor="w",pady=(2,20))
+        card=ttk.LabelFrame(box,text=" Server ",padding=16); card.pack(fill="x"); self.status=ttk.Label(card,text="● Stopped",foreground="#9b2c2c",font=("Segoe UI",11,"bold")); self.status.grid(row=0,column=0,sticky="w"); self.address=ttk.Label(card,text="Start server to get phone address",style="Muted.TLabel"); self.address.grid(row=1,column=0,sticky="w",pady=(6,0)); b=ttk.Frame(card); b.grid(row=0,column=1,rowspan=2,sticky="e"); self.start=ttk.Button(b,text="Start server",command=self.start_server); self.start.pack(side="left"); self.stop=ttk.Button(b,text="Stop",command=self.stop_server,state="disabled"); self.stop.pack(side="left",padx=(8,0)); card.columnconfigure(0,weight=1)
+        setting=ttk.LabelFrame(box,text=" Settings ",padding=16); setting.pack(fill="x",pady=(16,0)); ttk.Button(setting,text="Set phone drawing area",command=lambda:MapEditor(self)).grid(row=0,column=0,sticky="w"); self.port=tk.StringVar(value=str(self.settings.get("port"))); ttk.Label(setting,text="Port").grid(row=0,column=1,sticky="e",padx=(30,8)); ttk.Entry(setting,textvariable=self.port,width=8).grid(row=0,column=2,sticky="w"); ttk.Label(setting,text="Change port before starting server.",style="Muted.TLabel").grid(row=1,column=1,columnspan=2,sticky="w",padx=(30,0)); ttk.Label(box,text="Phone and PC must use same Wi-Fi network.",style="Muted.TLabel").pack(anchor="w",pady=(20,0))
+    def event(self,k,v): self.events.put((k,v))
+    def drain(self):
+        while True:
+            try:k,v=self.events.get_nowait()
+            except queue.Empty:break
+            if k=="client" and self.server.running:self.status.config(text=f"● Running — {v}",foreground="#1f7a46")
+            elif k=="error":self.status.config(text="● Could not start",foreground="#9b2c2c");self.address.config(text=v);self.start.config(state="normal");self.stop.config(state="disabled")
+        self.root.after(100,self.drain)
+    def start_server(self):
+        try:
+            p=int(self.port.get()); assert 1<=p<=65535
+        except (ValueError,AssertionError): messagebox.showerror("Invalid port","Use port from 1 to 65535."); return
+        self.settings.update(port=p); self.start.config(state="disabled"); self.status.config(text="● Starting…",foreground="#896a11"); self.root.update_idletasks()
+        if self.server.start(): self.status.config(text="● Running — waiting for phone",foreground="#1f7a46"); self.address.config(text=f"Open on phone: http://{local_ip()}:{p}"); self.stop.config(state="normal")
+        else:self.start.config(state="normal")
+    def stop_server(self): self.stop.config(state="disabled"); self.server.stop(); self.status.config(text="● Stopped",foreground="#9b2c2c"); self.address.config(text="Start server to get phone address"); self.start.config(state="normal")
+    def close(self): self.stop_server(); self.root.destroy()
 
-threading.Thread(target=cursor_overlay, daemon=True).start()
-web.run_app(app, host="0.0.0.0", port=8000, print=None)
-
-web.run_app(app, host="0.0.0.0", port=8000, print=None)
+if __name__=="__main__": App().root.mainloop()
