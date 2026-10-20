@@ -1,19 +1,37 @@
 <!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
 
+<head>
+    <style>
+        * {
+            user-select: none;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            -webkit-touch-callout: none;
+            outline: none;
+        }
+    </style>
+</head>
+
 <body style="margin:0; background:#111; touch-action:none; overflow:hidden; height:100vh">
-    <button id="fs" style="position:fixed;top:8px;right:8px;z-index:9">Fullscreen</button>
+    <button id="fs" style="position:fixed;top:8px;right:8px;z-index:9">Set fullscreen and start drawing</button>
     <script>
         const ws = new WebSocket(`ws://${location.host}/ws`);
         let drawing = false;
+        let isFullscreen = false;
 
-        const sendSize = () => ws.readyState === 1 &&
+        const sendSize = () => {
+            if (ws.readyState !== 1) return;
             ws.send(JSON.stringify({ type: 'size', w: innerWidth, h: innerHeight }));
+        };
         ws.onopen = sendSize;
         addEventListener('resize', sendSize);
 
         const send = (type, e) => {
-            if (ws.readyState !== 1) return;
+            // Only send data if in fullscreen mode
+            if (ws.readyState !== 1 || !isFullscreen) return;
+            
             const p = e.pointerType === 'pen' ? e.pressure : (type === 'hover' ? 0 : 0.5);
             ws.send(JSON.stringify({
                 type, x: e.clientX / innerWidth, y: e.clientY / innerHeight, p,
@@ -21,13 +39,64 @@
             }));
         };
 
-        addEventListener('pointerdown', e => { drawing = true; send('down', e); });
-        addEventListener('pointermove', e => {
-            for (const c of (e.getCoalescedEvents?.() || [e])) send(drawing ? 'move' : 'hover', c);
+        // Handle fullscreen changes
+        const handleFullscreenChange = () => {
+            const currentFullscreen = document.fullscreenElement !== null;
+            
+            if (currentFullscreen && !isFullscreen) {
+                // Entering fullscreen
+                isFullscreen = true;
+                fs.style.display = 'none';
+                drawing = false;
+            } else if (!currentFullscreen && isFullscreen) {
+                // Exiting fullscreen
+                isFullscreen = false;
+                fs.style.display = 'block';
+                drawing = false;
+            }
+        };
+
+        document.addEventListener('fullscreenchange', handleFullscreenChange);
+        document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+        document.addEventListener('mozfullscreenchange', handleFullscreenChange);
+        document.addEventListener('msfullscreenchange', handleFullscreenChange);
+
+        // Disable text selection
+        document.addEventListener('selectstart', e => e.preventDefault());
+        document.addEventListener('mousedown', e => e.preventDefault());
+
+        // Pointer events
+        addEventListener('pointerdown', e => { 
+            if (!isFullscreen) return;
+            drawing = true; 
+            send('down', e); 
         });
-        addEventListener('pointerup', e => { drawing = false; send('up', e); });
-        addEventListener('pointercancel', e => { drawing = false; send('up', e); });
-        document.documentElement.addEventListener('pointerleave', e => send('leave', e));
+        
+        addEventListener('pointermove', e => {
+            if (!isFullscreen) return;
+            for (const c of (e.getCoalescedEvents?.() || [e])) {
+                send(drawing ? 'move' : 'hover', c);
+            }
+        });
+        
+        addEventListener('pointerup', e => { 
+            if (!isFullscreen) return;
+            drawing = false; 
+            send('up', e); 
+        });
+        
+        addEventListener('pointercancel', e => { 
+            if (!isFullscreen) return;
+            drawing = false; 
+            send('up', e); 
+        });
+        
+        document.documentElement.addEventListener('pointerleave', e => {
+            if (!isFullscreen) return;
+            send('leave', e);
+        });
+
         addEventListener('contextmenu', e => e.preventDefault());
+        
         fs.onclick = () => document.documentElement.requestFullscreen();
     </script>

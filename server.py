@@ -1,10 +1,12 @@
 """Phone Tablet Windows server with Tk control panel."""
-import asyncio, ctypes, json, queue, socket, sys, threading
+import asyncio, ctypes, json, queue, socket, sys, threading, io
 from ctypes import wintypes as w
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, ttk
 from aiohttp import web, WSMsgType
+import qrcode
+from PIL import Image, ImageTk
 
 BASE = Path(__file__).resolve().parent
 RESOURCE = Path(getattr(sys, "_MEIPASS", BASE))
@@ -84,7 +86,7 @@ class Server:
                     x,y,p=float(d["x"]),float(d["y"]),float(d.get("p",0))
                 except (KeyError,TypeError,ValueError,json.JSONDecodeError): continue
                 last=(x,y); pen=self.pen
-                if kind=="hover": pen.inject(pen.INRANGE|pen.UPDATE|(0 if inrange else pen.NEW),x,y); inrange=True
+                if kind=="hover": pen.inject(pen.INRANGE|pen.UPDATE|(0 if inrange else pen.NEW),x,y,p); inrange=True
                 elif kind=="down": pen.inject(pen.INRANGE|pen.CONTACT|pen.BTN1|pen.DOWN|(0 if inrange else pen.NEW),x,y,p); down=inrange=True
                 elif kind=="move" and down: pen.inject(pen.INRANGE|pen.CONTACT|pen.BTN1|pen.UPDATE,x,y,p)
                 elif kind=="up" and down:
@@ -145,29 +147,39 @@ def local_ip():
     except OSError: return "127.0.0.1"
     finally: s.close()
 
+def generate_qr(text, size=200):
+    """Generate QR code image and return as PhotoImage"""
+    qr = qrcode.QRCode(version=1, box_size=10, border=2)
+    qr.add_data(text)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    img = img.resize((size, size), Image.Resampling.LANCZOS)
+    return ImageTk.PhotoImage(img)
+
 class App:
     def __init__(self):
-        self.settings=Settings(); self.events=queue.Queue(); self.root=tk.Tk(); self.root.title("Phone Tablet"); self.root.minsize(580,400); self.root.protocol("WM_DELETE_WINDOW",self.close); u=ctypes.windll.user32; u.SetProcessDPIAware(); self.sw,self.sh=u.GetSystemMetrics(0),u.GetSystemMetrics(1); self.server=Server(self.settings,self.event); self.build(); self.root.after(100,self.drain)
+        self.settings=Settings(); self.events=queue.Queue(); self.root=tk.Tk(); self.root.title("Phone Tablet"); self.root.minsize(580,400); self.root.protocol("WM_DELETE_WINDOW",self.close); u=ctypes.windll.user32; u.SetProcessDPIAware(); self.sw,self.sh=u.GetSystemMetrics(0),u.GetSystemMetrics(1); self.server=Server(self.settings,self.event); self.qr_photo=None; self.build(); self.root.after(100,self.drain)
     def build(self):
         st=ttk.Style(self.root); st.configure("Title.TLabel",font=("Segoe UI",18,"bold")); st.configure("Muted.TLabel",foreground="#5d6773"); box=ttk.Frame(self.root,padding=24); box.pack(fill="both",expand=True); ttk.Label(box,text="Phone Tablet",style="Title.TLabel").pack(anchor="w"); ttk.Label(box,text="Use phone and S Pen as precise Windows pen input.",style="Muted.TLabel").pack(anchor="w",pady=(2,20))
-        card=ttk.LabelFrame(box,text=" Server ",padding=16); card.pack(fill="x"); self.status=ttk.Label(card,text="● Stopped",foreground="#9b2c2c",font=("Segoe UI",11,"bold")); self.status.grid(row=0,column=0,sticky="w"); self.address=ttk.Label(card,text="Start server to get phone address",style="Muted.TLabel"); self.address.grid(row=1,column=0,sticky="w",pady=(6,0)); b=ttk.Frame(card); b.grid(row=0,column=1,rowspan=2,sticky="e"); self.start=ttk.Button(b,text="Start server",command=self.start_server); self.start.pack(side="left"); self.stop=ttk.Button(b,text="Stop",command=self.stop_server,state="disabled"); self.stop.pack(side="left",padx=(8,0)); card.columnconfigure(0,weight=1)
-        setting=ttk.LabelFrame(box,text=" Settings ",padding=16); setting.pack(fill="x",pady=(16,0)); ttk.Button(setting,text="Set phone drawing area",command=lambda:MapEditor(self)).grid(row=0,column=0,sticky="w"); self.port=tk.StringVar(value=str(self.settings.get("port"))); ttk.Label(setting,text="Port").grid(row=0,column=1,sticky="e",padx=(30,8)); ttk.Entry(setting,textvariable=self.port,width=8).grid(row=0,column=2,sticky="w"); ttk.Label(setting,text="Change port before starting server.",style="Muted.TLabel").grid(row=1,column=1,columnspan=2,sticky="w",padx=(30,0)); ttk.Label(box,text="Phone and PC must use same Wi-Fi network.",style="Muted.TLabel").pack(anchor="w",pady=(20,0))
+        card=ttk.LabelFrame(box,text=" Server ",padding=16); card.pack(fill="x"); self.status=ttk.Label(card,text="? Stopped",foreground="#9b2c2c",font=("Segoe UI",11,"bold")); self.status.grid(row=0,column=0,sticky="w"); self.address=ttk.Label(card,text="Start server to get phone address",style="Muted.TLabel"); self.address.grid(row=1,column=0,sticky="w",pady=(6,0)); self.qr_label=ttk.Label(card); self.qr_label.grid(row=0,column=1,rowspan=2,sticky="e",padx=(20,0)); b=ttk.Frame(card); b.grid(row=2,column=0,columnspan=2,sticky="ew",pady=(12,0)); self.start=ttk.Button(b,text="Start server",command=self.start_server); self.start.pack(side="left"); self.stop=ttk.Button(b,text="Stop",command=self.stop_server,state="disabled"); self.stop.pack(side="left",padx=(8,0)); card.columnconfigure(0,weight=1)
+        setting=ttk.LabelFrame(box,text=" Settings ",padding=16); setting.pack(fill="x",pady=(16,0)); ttk.Button(setting,text="Set phone drawing area",command=lambda:MapEditor(self)).grid(row=0,column=0,sticky="w"); self.port=tk.StringVar(value=str(self.settings.get("port"))); ttk.Label(setting,text="Port").grid(row=0,column=1,sticky="e",padx=(30,8)); ttk.Entry(setting,textvariable=self.port,width=8).grid(row=0,column=2,sticky="w"); ttk.Label(setting,text="Change port before starting server.",style="Muted.TLabel").grid(row=1,column=1,columnspan=2,sticky="w",padx=(30,0))
+        ttk.Label(box,text="Phone and PC must use same Wi-Fi network.",style="Muted.TLabel").pack(anchor="w",pady=(20,0))
     def event(self,k,v): self.events.put((k,v))
     def drain(self):
         while True:
             try:k,v=self.events.get_nowait()
             except queue.Empty:break
-            if k=="client" and self.server.running:self.status.config(text=f"● Running — {v}",foreground="#1f7a46")
-            elif k=="error":self.status.config(text="● Could not start",foreground="#9b2c2c");self.address.config(text=v);self.start.config(state="normal");self.stop.config(state="disabled")
+            if k=="client" and self.server.running:self.status.config(text=f"Running  {v}",foreground="#1f7a46")
+            elif k=="error":self.status.config(text="? Could not start",foreground="#9b2c2c");self.address.config(text=v);self.start.config(state="normal");self.stop.config(state="disabled");self.qr_label.config(image="")
         self.root.after(100,self.drain)
     def start_server(self):
         try:
             p=int(self.port.get()); assert 1<=p<=65535
         except (ValueError,AssertionError): messagebox.showerror("Invalid port","Use port from 1 to 65535."); return
-        self.settings.update(port=p); self.start.config(state="disabled"); self.status.config(text="● Starting…",foreground="#896a11"); self.root.update_idletasks()
-        if self.server.start(): self.status.config(text="● Running — waiting for phone",foreground="#1f7a46"); self.address.config(text=f"Open on phone: http://{local_ip()}:{p}"); self.stop.config(state="normal")
+        self.settings.update(port=p); self.start.config(state="disabled"); self.status.config(text=" Starting",foreground="#896a11"); self.root.update_idletasks()
+        if self.server.start(): self.status.config(text="Running waiting for phone",foreground="#1f7a46"); addr=f"http://{local_ip()}:{p}"; self.address.config(text=f"Open on phone: {addr}"); self.qr_photo=generate_qr(addr,200); self.qr_label.config(image=self.qr_photo); self.stop.config(state="normal")
         else:self.start.config(state="normal")
-    def stop_server(self): self.stop.config(state="disabled"); self.server.stop(); self.status.config(text="● Stopped",foreground="#9b2c2c"); self.address.config(text="Start server to get phone address"); self.start.config(state="normal")
+    def stop_server(self): self.stop.config(state="disabled"); self.server.stop(); self.status.config(text="? Stopped",foreground="#9b2c2c"); self.address.config(text="Start server to get phone address"); self.qr_label.config(image=""); self.qr_photo=None; self.start.config(state="normal")
     def close(self): self.stop_server(); self.root.destroy()
 
 if __name__=="__main__": App().root.mainloop()
