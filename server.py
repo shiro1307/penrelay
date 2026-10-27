@@ -12,7 +12,7 @@ BASE = Path(__file__).resolve().parent
 RESOURCE = Path(getattr(sys, "_MEIPASS", BASE))
 PATH = (Path(sys.executable).parent if getattr(sys, "frozen", False) else BASE) / "tablet_config.json"
 DEFAULT = {"x": 0., "y": 0., "w": 1., "h": 1., "lock": True,
-           "aspect": None, "port": 8000}
+           "aspect": None, "port": 8000, "stylusOnly": False}
 
 class DebouncedSettings:
     """Settings with debounced file writes to reduce I/O"""
@@ -116,7 +116,9 @@ class Server:
             self.loop.close(); self.event("stopped","")
     async def index(self, request): return web.FileResponse(RESOURCE / "index.html")
     async def ws(self, request):
-        ws=web.WebSocketResponse(heartbeat=20); await ws.prepare(request); self.event("client","Phone connected"); last=(0,0); down=inrange=False
+        ws=web.WebSocketResponse(heartbeat=20); await ws.prepare(request); self.event("client","Phone connected")
+        pen_state = {"down": False, "inrange": False, "last": (0, 0)}
+        touch_state = {"down": False, "inrange": False, "last": (0, 0)}
         try:
             async for msg in ws:
                 if msg.type != WSMsgType.TEXT: continue
@@ -132,25 +134,48 @@ class Server:
                         except (KeyError, ValueError):
                             pass
                         continue
-                    x,y=float(d.get("x",0)),float(d.get("y",0))
-                    p=max(0, min(1, float(d.get("p",0))))
-                except (KeyError,TypeError,ValueError,json.JSONDecodeError):
+                    is_pen = d.get("pen", False)
+                    x, y = float(d.get("x", 0)), float(d.get("y", 0))
+                    p = max(0, min(1, float(d.get("p", 0))))
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
                     continue
-                
-                last=(x,y); pen=self.pen
-                if kind=="hover": pen.inject(pen.INRANGE|pen.UPDATE|(0 if inrange else pen.NEW),x,y,p); inrange=True
-                elif kind=="down": pen.inject(pen.INRANGE|pen.CONTACT|pen.BTN1|pen.DOWN|(0 if inrange else pen.NEW),x,y,p); down=inrange=True
-                elif kind=="move" and down: pen.inject(pen.INRANGE|pen.CONTACT|pen.BTN1|pen.UPDATE,x,y,p)
-                elif kind=="up" and down:
-                    pen.inject(pen.INRANGE|pen.UP,x,y,p); down=False
-                    if not d.get("pen",False): pen.inject(pen.UPDATE,x,y); inrange=False
-                elif kind=="leave" and inrange and not down: pen.inject(pen.UPDATE,x,y); inrange=False
+                # In stylus-only mode, filter touch input only (allow pen and mouse hover/move)
+                pointer_type = d.get("pointerType", "mouse")
+                if self.settings.get("stylusOnly") and pointer_type == "touch":
+                    continue
+                state = pen_state if is_pen else touch_state
+                state["last"] = (x, y)
+                pen = self.pen
+                if kind == "hover":
+                    pen.inject(pen.INRANGE | pen.UPDATE | (0 if state["inrange"] else pen.NEW), x, y, p)
+                    state["inrange"] = True
+                elif kind == "down":
+                    pen.inject(pen.INRANGE | pen.CONTACT | pen.BTN1 | pen.DOWN | (0 if state["inrange"] else pen.NEW), x, y, p)
+                    state["down"] = True
+                    state["inrange"] = True
+                elif kind == "move" and state["down"]:
+                    pen.inject(pen.INRANGE | pen.CONTACT | pen.BTN1 | pen.UPDATE, x, y, p)
+                elif kind == "up" and state["down"]:
+                    pen.inject(pen.INRANGE | pen.UP, x, y, p)
+                    state["down"] = False
+                    if is_pen:
+                        pen.inject(pen.UPDATE, x, y)
+                        state["inrange"] = False
+                elif kind == "leave" and state["inrange"] and not state["down"]:
+                    pen.inject(pen.UPDATE, x, y)
+                    state["inrange"] = False
         except Exception as e:
             pass
         finally:
             if self.pen:
-                if down: self.pen.inject(self.pen.INRANGE|self.pen.UP,*last)
-                if inrange: self.pen.inject(self.pen.UPDATE,*last)
+                if pen_state["down"]:
+                    self.pen.inject(self.pen.INRANGE | self.pen.UP, *pen_state["last"])
+                if pen_state["inrange"]:
+                    self.pen.inject(self.pen.UPDATE, *pen_state["last"])
+                if touch_state["down"]:
+                    self.pen.inject(self.pen.INRANGE | self.pen.UP, *touch_state["last"])
+                if touch_state["inrange"]:
+                    self.pen.inject(self.pen.UPDATE, *touch_state["last"])
             self.event("client","Phone disconnected")
         return ws
 
@@ -232,10 +257,13 @@ class App:
     def build(self):
         st=ttk.Style(self.root); st.configure("Title.TLabel",font=("Segoe UI",18,"bold")); st.configure("Muted.TLabel",foreground="#5d6773"); box=ttk.Frame(self.root,padding=24); box.pack(fill="both",expand=True); ttk.Label(box,text="Phone Tablet",style="Title.TLabel").pack(anchor="w"); ttk.Label(box,text="Use phone and S Pen as precise Windows pen input.",style="Muted.TLabel").pack(anchor="w",pady=(2,20))
         card=ttk.LabelFrame(box,text=" Server ",padding=16); card.pack(fill="x"); self.status=ttk.Label(card,text="* Stopped",foreground="#9b2c2c",font=("Segoe UI",11,"bold")); self.status.grid(row=0,column=0,sticky="w"); self.address=ttk.Label(card,text="Start server to get phone address",style="Muted.TLabel"); self.address.grid(row=1,column=0,sticky="w",pady=(6,0)); self.qr_label=ttk.Label(card); self.qr_label.grid(row=0,column=1,rowspan=2,sticky="e",padx=(20,0)); b=ttk.Frame(card); b.grid(row=2,column=0,columnspan=2,sticky="ew",pady=(12,0)); self.start=ttk.Button(b,text="Start server",command=self.start_server); self.start.pack(side="left"); self.stop=ttk.Button(b,text="Stop",command=self.stop_server,state="disabled"); self.stop.pack(side="left",padx=(8,0)); card.columnconfigure(0,weight=1)
-        setting=ttk.LabelFrame(box,text=" Settings ",padding=16); setting.pack(fill="x",pady=(16,0)); ttk.Button(setting,text="Set phone drawing area",command=lambda:MapEditor(self)).grid(row=0,column=0,sticky="w"); self.port=tk.StringVar(value=str(self.settings.get("port"))); ttk.Label(setting,text="Port").grid(row=0,column=1,sticky="e",padx=(30,8)); ttk.Entry(setting,textvariable=self.port,width=8).grid(row=0,column=2,sticky="w"); ttk.Label(setting,text="Change port before starting server.",style="Muted.TLabel").grid(row=1,column=1,columnspan=2,sticky="w",padx=(30,0))
+        setting=ttk.LabelFrame(box,text=" Settings ",padding=16); setting.pack(fill="x",pady=(16,0)); ttk.Button(setting,text="Set phone drawing area",command=lambda:MapEditor(self)).grid(row=0,column=0,sticky="w"); self.port=tk.StringVar(value=str(self.settings.get("port"))); ttk.Label(setting,text="Port").grid(row=0,column=1,sticky="e",padx=(30,8)); ttk.Entry(setting,textvariable=self.port,width=8).grid(row=0,column=2,sticky="w"); ttk.Label(setting,text="Change port before starting server.",style="Muted.TLabel").grid(row=1,column=1,columnspan=2,sticky="w",padx=(30,0)); self.stylus_only=tk.BooleanVar(value=self.settings.get("stylusOnly")); ttk.Checkbutton(setting,text="Stylus only (ignore touch)",variable=self.stylus_only,command=self.update_stylus_only).grid(row=2,column=0,columnspan=3,sticky="w",pady=(12,0))
         ttk.Label(box,text="Phone and PC must use same Wi-Fi network.",style="Muted.TLabel").pack(anchor="w",pady=(20,0))
     
     def event(self,k,v): self.events.put((k,v))
+    
+    def update_stylus_only(self):
+        self.settings.update(stylusOnly=self.stylus_only.get())
     
     def drain(self):
         while True:

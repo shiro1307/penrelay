@@ -91,7 +91,8 @@
             try {
                 ws.send(JSON.stringify({
                     type, x: e.clientX / innerWidth, y: e.clientY / innerHeight, p,
-                    pen: e.pointerType === 'pen'
+                    pen: e.pointerType === 'pen',
+                    pointerType: e.pointerType
                 }));
             } catch (err) {
                 console.error('Failed to send:', err);
