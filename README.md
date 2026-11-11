@@ -1,6 +1,6 @@
-# Phone Tablet
+# Pen Relay
 
-Use a phone or tablet as a wireless Windows pen-input surface. Phone Tablet runs a small server on your PC, opens a full-screen drawing surface in the device browser, and converts its pointer input—including compatible stylus pressure and hover—into native Windows pen events.
+Use a phone or tablet as a wireless Windows pen-input surface. Pen Relay runs a small server on your PC, opens a full-screen drawing surface in the device browser, and converts its pointer input—including compatible stylus pressure and hover—into native Windows pen events.
 
 It is designed for a phone and PC on the same trusted Wi-Fi network.
 
@@ -30,12 +30,12 @@ py -m pip install -r requirements.txt
 py server.py
 ```
 
-1. In the Phone Tablet window, choose **Start server**.
+1. In the Pen Relay window, choose **Start server**.
 2. On the phone, scan the displayed QR code or open the shown `http://…` address.
 3. Tap **Set fullscreen and start drawing** in the phone browser.
 4. Use the phone screen as the input surface. Leave full-screen mode to stop forwarding input.
 
-The phone page shows its connection state before it enters full-screen mode. Keep the Phone Tablet window open while using the surface.
+The phone page shows its connection state before it enters full-screen mode. Keep the Pen Relay window open while using the surface.
 
 ## Configure the drawing area
 
@@ -74,10 +74,10 @@ Install PyInstaller, then run:
 
 ```powershell
 py -m pip install pyinstaller
-py -m PyInstaller --noconfirm --onedir --windowed --name PhoneTablet --add-data "index.html;." server.py
+py -m PyInstaller --noconfirm --onedir --windowed --name PenRelay --add-data "index.html;." server.py
 ```
 
-The packaged app is created under `dist\PhoneTablet`. Keep the generated folder intact; it includes the web page the app serves to the phone.
+The packaged app is created under `dist\PenRelay`. Keep the generated folder intact; it includes the web page the app serves to the phone.
 
 ## Project layout
 

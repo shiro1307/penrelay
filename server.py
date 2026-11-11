@@ -1,4 +1,4 @@
-"""Phone Tablet Windows server with Tk control panel."""
+"""Pen Relay Windows server with Tk control panel."""
 import asyncio, ctypes, json, queue, socket, sys, threading, io, time
 from ctypes import wintypes as w
 from pathlib import Path
@@ -252,10 +252,10 @@ def generate_qr(text, size=200):
 
 class App:
     def __init__(self):
-        self.settings=Settings(); self.events=queue.Queue(); self.root=tk.Tk(); self.root.title("Phone Tablet"); self.root.minsize(580,400); self.root.protocol("WM_DELETE_WINDOW",self.close); u=ctypes.windll.user32; u.SetProcessDPIAware(); self.sw,self.sh=u.GetSystemMetrics(0),u.GetSystemMetrics(1); self.server=Server(self.settings,self.event); self.qr_photo=None; self.build(); self.root.after(50,self.drain)
+        self.settings=Settings(); self.events=queue.Queue(); self.root=tk.Tk(); self.root.title("Pen Relay"); self.root.minsize(580,400); self.root.protocol("WM_DELETE_WINDOW",self.close); u=ctypes.windll.user32; u.SetProcessDPIAware(); self.sw,self.sh=u.GetSystemMetrics(0),u.GetSystemMetrics(1); self.server=Server(self.settings,self.event); self.qr_photo=None; self.build(); self.root.after(50,self.drain)
     
     def build(self):
-        st=ttk.Style(self.root); st.configure("Title.TLabel",font=("Segoe UI",18,"bold")); st.configure("Muted.TLabel",foreground="#5d6773"); box=ttk.Frame(self.root,padding=24); box.pack(fill="both",expand=True); ttk.Label(box,text="Phone Tablet",style="Title.TLabel").pack(anchor="w"); ttk.Label(box,text="Use phone and S Pen as precise Windows pen input.",style="Muted.TLabel").pack(anchor="w",pady=(2,20))
+        st=ttk.Style(self.root); st.configure("Title.TLabel",font=("Segoe UI",18,"bold")); st.configure("Muted.TLabel",foreground="#5d6773"); box=ttk.Frame(self.root,padding=24); box.pack(fill="both",expand=True); ttk.Label(box,text="Pen Relay",style="Title.TLabel").pack(anchor="w"); ttk.Label(box,text="Use phone and S Pen as precise Windows pen input.",style="Muted.TLabel").pack(anchor="w",pady=(2,20))
         card=ttk.LabelFrame(box,text=" Server ",padding=16); card.pack(fill="x"); self.status=ttk.Label(card,text="* Stopped",foreground="#9b2c2c",font=("Segoe UI",11,"bold")); self.status.grid(row=0,column=0,sticky="w"); self.address=ttk.Label(card,text="Start server to get phone address",style="Muted.TLabel"); self.address.grid(row=1,column=0,sticky="w",pady=(6,0)); self.qr_label=ttk.Label(card); self.qr_label.grid(row=0,column=1,rowspan=2,sticky="e",padx=(20,0)); b=ttk.Frame(card); b.grid(row=2,column=0,columnspan=2,sticky="ew",pady=(12,0)); self.start=ttk.Button(b,text="Start server",command=self.start_server); self.start.pack(side="left"); self.stop=ttk.Button(b,text="Stop",command=self.stop_server,state="disabled"); self.stop.pack(side="left",padx=(8,0)); card.columnconfigure(0,weight=1)
         setting=ttk.LabelFrame(box,text=" Settings ",padding=16); setting.pack(fill="x",pady=(16,0)); ttk.Button(setting,text="Set phone drawing area",command=lambda:MapEditor(self)).grid(row=0,column=0,sticky="w"); self.port=tk.StringVar(value=str(self.settings.get("port"))); ttk.Label(setting,text="Port").grid(row=0,column=1,sticky="e",padx=(30,8)); ttk.Entry(setting,textvariable=self.port,width=8).grid(row=0,column=2,sticky="w"); ttk.Label(setting,text="Change port before starting server.",style="Muted.TLabel").grid(row=1,column=1,columnspan=2,sticky="w",padx=(30,0)); self.stylus_only=tk.BooleanVar(value=self.settings.get("stylusOnly")); ttk.Checkbutton(setting,text="Stylus only (ignore touch)",variable=self.stylus_only,command=self.update_stylus_only).grid(row=2,column=0,columnspan=3,sticky="w",pady=(12,0))
         ttk.Label(box,text="Phone and PC must use same Wi-Fi network.",style="Muted.TLabel").pack(anchor="w",pady=(20,0))

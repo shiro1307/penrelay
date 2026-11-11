@@ -1,4 +1,4 @@
-# Phone Tablet - Performance, Bugfix & Responsiveness Improvements
+# Pen Relay - Performance, Bugfix & Responsiveness Improvements
 
 ## Performance Issues
 
